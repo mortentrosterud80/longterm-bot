@@ -36,5 +36,6 @@ Kurs: <b>{price} kr</b>
 Longterm status: Stabil utvikling"""
 
     send_telegram(message)
+    
 if __name__ == "__main__":
     main()
