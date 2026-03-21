@@ -1,0 +1,1 @@
+print("Longterm bot starter...")
