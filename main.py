@@ -23,19 +23,18 @@ def get_price(ticker):
 
 
 def main():
+    if not TOKEN or not CHAT_ID:
+        raise ValueError("Mangler TOKEN_BOT_LONG eller CHAT_ID_LONG")
+
     ticker = "KOG.OL"
     price = get_price(ticker)
 
-    message = f"""
-📊 <b>KOG</b>
+    message = f"""📊 <b>KOG</b>
 
 Kurs: <b>{price} kr</b>
 
-Longterm status: Stabil utvikling
-"""
+Longterm status: Stabil utvikling"""
 
     send_telegram(message)
-
-
 if __name__ == "__main__":
     main()
