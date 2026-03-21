@@ -1,22 +1,23 @@
 import os
 import time
+
 import requests
 import yfinance as yf
 
-
-# Linje 7-8: henter Railway-variabler
 TOKEN = os.getenv("TOKEN_BOT_LONG")
 CHAT_ID = os.getenv("CHAT_ID_LONG")
 
 
-# Linje 12-16: stopper tidlig hvis variabler mangler
 def validate_env() -> None:
+    if not TOKEN:
+        print("TOKEN_BOT_LONG mangler")
+    if not CHAT_ID:
+        print("CHAT_ID_LONG mangler")
     if not TOKEN or not CHAT_ID:
         raise ValueError("Mangler TOKEN_BOT_LONG eller CHAT_ID_LONG")
 
 
-# Linje 20-32: sender Telegram-melding
-def send_telegram(message: str) -> None:
+def send_telegram(message: str) -> bool:
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     payload = {
         "chat_id": CHAT_ID,
@@ -24,11 +25,20 @@ def send_telegram(message: str) -> None:
         "parse_mode": "HTML",
     }
 
-    response = requests.post(url, json=payload, timeout=20)
-    response.raise_for_status()
+    try:
+        response = requests.post(url, json=payload, timeout=20)
+        if response.ok:
+            print("Telegram testmelding sendt")
+            return True
+
+        print(f"Telegram API-feil med statuskode: {response.status_code}")
+        print(response.text)
+        return False
+    except requests.RequestException as exc:
+        print(f"Telegram request-feil: {exc}")
+        return False
 
 
-# Linje 36-43: henter siste close/pris
 def get_price(ticker: str) -> float:
     stock = yf.Ticker(ticker)
     data = stock.history(period="1d")
@@ -39,30 +49,25 @@ def get_price(ticker: str) -> float:
     return round(float(data["Close"].iloc[-1]), 2)
 
 
-# Linje 47-56: bygger testmelding
 def build_message() -> str:
     ticker = "KOG.OL"
     price = get_price(ticker)
-
-    return f"""📊 <b>KOG</b>
-
-Kurs: <b>{price} kr</b>
-
-Longterm status: Stabil utvikling"""
+    return f"📊 <b>KOG</b>\n\nKurs: <b>{price} kr</b>\n\nLongterm status: Stabil utvikling"
 
 
-# Linje 60-74: kjører én testmelding ved oppstart, holder så containeren levende
 def main() -> None:
     validate_env()
-
     message = build_message()
-    send_telegram(message)
+    sent = send_telegram(message)
 
-    # Holder Railway-servicen oppe uten å spamme Telegram
+    if not sent:
+        print("Telegram testmelding feilet")
+    else:
+        print("Telegram testmelding lyktes")
+
     while True:
         time.sleep(3600)
 
 
-# Linje 78-79: startpunkt
 if __name__ == "__main__":
     main()
