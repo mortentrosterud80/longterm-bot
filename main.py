@@ -4,16 +4,16 @@ import time
 import requests
 import yfinance as yf
 
-TOKEN = os.getenv("TOKEN_BOT")
+TOKEN_BOT = os.getenv("TOKEN_BOT")
 CHAT_ID = os.getenv("CHAT_ID")
 
 
 def validate_env() -> None:
-    if not TOKEN:
+    if not TOKEN_BOT:
         print("TOKEN_BOT mangler")
     if not CHAT_ID:
         print("CHAT_ID mangler")
-    if not TOKEN or not CHAT_ID:
+    if not TOKEN_BOT or not CHAT_ID:
         raise ValueError("Mangler TOKEN_BOT eller CHAT_ID")
 
 
