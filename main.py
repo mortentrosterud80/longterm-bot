@@ -10,6 +10,7 @@ TOKEN_BOT = os.getenv("TOKEN_BOT") or os.getenv("TOKEN_BOT_LONG")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("CHAT_ID_LONG")
 DEFAULT_NEW_CAPITAL = 30_000
 DIVIDER = "────────────────────"
+FORCE_MONTHLY_TEST = True  # Midlertidig testflag for å tvinge neste månedlige Telegram-melding
 
 
 @dataclass(frozen=True)
@@ -108,7 +109,10 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def determine_message_type(run_date: date) -> str | None:
+def determine_message_type(run_date: date, force_monthly_test: bool = False) -> str | None:
+    if force_monthly_test:
+        return "monthly_test"
+
     quarter_starts = {(1, 1), (4, 1), (7, 1), (10, 1)}
     if (run_date.month, run_date.day) in quarter_starts:
         return "quarterly"
@@ -354,9 +358,14 @@ def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAUL
     return rounded_allocations
 
 
-def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> str:
+def format_monthly_message(
+    run_date: date, snapshots: list[StockSnapshot], test_mode: bool = False
+) -> str:
+    title = "🔥 TEST – VISUELT MÅNEDLIG" if test_mode else "🔥 VISUELT – MÅNEDLIG"
+    closing_line = "👉 Testmelding – ingen handling" if test_mode else "👉 Ingen handling – kun observasjon"
+
     lines = [
-        "🔥 VISUELT – MÅNEDLIG",
+        title,
         "",
         f"📊 Longportefølje – {run_date.strftime('%d.%m.%Y')}",
         "(Statusoppdatering)",
@@ -383,7 +392,7 @@ def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> st
             "🧭 Kort vurdering:",
             *observations,
             "",
-            "👉 Ingen handling – kun observasjon",
+            closing_line,
         ]
     )
     return "\n".join(lines)
@@ -457,15 +466,19 @@ def main() -> None:
     validate_env()
 
     run_date = datetime.now(timezone.utc).date()
-    message_type = determine_message_type(run_date)
+    message_type = determine_message_type(run_date, force_monthly_test=FORCE_MONTHLY_TEST)
     if message_type is None:
         print(f"Ingen planlagt melding for {run_date.strftime('%d.%m.%Y')}")
         return
 
     snapshots = build_snapshots()
 
-    if message_type == "monthly":
-        message = format_monthly_message(run_date, snapshots)
+    if message_type in {"monthly", "monthly_test"}:
+        message = format_monthly_message(
+            run_date,
+            snapshots,
+            test_mode=message_type == "monthly_test",
+        )
     else:
         message = format_quarterly_message(run_date, snapshots)
 
