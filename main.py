@@ -55,26 +55,39 @@ def fetch_price(symbol: str) -> float | None:
                 return None
             last_price = data["Close"].dropna().iloc[-1]
 
-        price = round(float(last_price), 2)
-        print(f"Fant kurs for {symbol}: {price} kr")
+        price = round(float(last_price), 1)
+        print(f"Fant kurs for {symbol}: {price}")
         return price
     except Exception as exc:
         print(f"Klarte ikke hente kurs for {symbol}: {exc}")
         return None
 
 
+def format_price_line(symbol: str, price: float | None) -> str:
+    if price is None:
+        return f"{symbol}: ⚠️ ingen data"
+
+    if symbol in ["KOG.OL", "TOM.OL"]:
+        return f"{symbol}: {price:.1f} kr"
+
+    return f"{symbol}: {price:.1f}"
+
+
 def main() -> None:
     validate_env()
 
-    symbol = "KOG.OL"
-    price = fetch_price(symbol)
+    symbols = ["KOG.OL", "TOM.OL", "NVO", "SOFI"]
+    print(f"Skal hente kurser for: {', '.join(symbols)}")
 
-    # Bygg en enkel statusmelding ved oppstart.
-    if price is not None:
-        message = f"📈 Longterm bot aktiv\n{symbol} siste kurs: {price:.2f} kr"
-    else:
-        message = f"⚠️ Longterm bot aktiv, men klarte ikke hente kurs for {symbol}"
+    lines = ["📊 Longterm status", ""]
 
+    for symbol in symbols:
+        price = fetch_price(symbol)
+        if price is None:
+            print(f"Feilet å hente kurs for {symbol}")
+        lines.append(format_price_line(symbol, price))
+
+    message = "\n".join(lines)
     sent = send_telegram(message)
 
     if sent:
