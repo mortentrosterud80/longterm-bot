@@ -1,5 +1,4 @@
 import os
-import time
 
 import requests
 import yfinance as yf
@@ -39,34 +38,49 @@ def send_telegram(message: str) -> bool:
         return False
 
 
-def get_price(ticker: str) -> float:
-    stock = yf.Ticker(ticker)
-    data = stock.history(period="1d")
+def fetch_price(symbol: str) -> float | None:
+    # Hent siste tilgjengelige kurs for symbolet.
+    print(f"Henter kurs for {symbol}")
 
-    if data.empty:
-        raise ValueError(f"Ingen kursdata funnet for {ticker}")
+    try:
+        stock = yf.Ticker(symbol)
+        info = stock.fast_info
+        last_price = info.get("lastPrice") if info else None
 
-    return round(float(data["Close"].iloc[-1]), 2)
+        if last_price is None:
+            print(f"Fant ikke lastPrice for {symbol}, prøver close-kurs")
+            data = stock.history(period="5d")
+            if data.empty:
+                print(f"Ingen kursdata funnet for {symbol}")
+                return None
+            last_price = data["Close"].dropna().iloc[-1]
 
-
-def build_message() -> str:
-    ticker = "KOG.OL"
-    price = get_price(ticker)
-    return f"📊 <b>KOG</b>\n\nKurs: <b>{price} kr</b>\n\nLongterm status: Stabil utvikling"
+        price = round(float(last_price), 2)
+        print(f"Fant kurs for {symbol}: {price} kr")
+        return price
+    except Exception as exc:
+        print(f"Klarte ikke hente kurs for {symbol}: {exc}")
+        return None
 
 
 def main() -> None:
     validate_env()
-    message = build_message()
+
+    symbol = "KOG.OL"
+    price = fetch_price(symbol)
+
+    # Bygg en enkel statusmelding ved oppstart.
+    if price is not None:
+        message = f"📈 Longterm bot aktiv\n{symbol} siste kurs: {price:.2f} kr"
+    else:
+        message = f"⚠️ Longterm bot aktiv, men klarte ikke hente kurs for {symbol}"
+
     sent = send_telegram(message)
 
-    if not sent:
-        print("Telegram testmelding feilet")
+    if sent:
+        print("Telegram-melding ble sendt")
     else:
-        print("Telegram testmelding lyktes")
-
-    while True:
-        time.sleep(3600)
+        print("Telegram-melding ble ikke sendt")
 
 
 if __name__ == "__main__":
