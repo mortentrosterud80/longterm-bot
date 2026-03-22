@@ -4,23 +4,23 @@ import time
 import requests
 import yfinance as yf
 
-TOKEN = os.getenv("TOKEN_BOT_LONG")
-CHAT_ID = os.getenv("CHAT_ID_LONG")
+TOKEN = os.getenv("TOKEN_BOT")
+CHAT_ID = os.getenv("CHAT_ID")
 
 
 def validate_env() -> None:
     if not TOKEN:
-        print("TOKEN_BOT_LONG mangler")
+        print("TOKEN_BOT mangler")
     if not CHAT_ID:
-        print("CHAT_ID_LONG mangler")
+        print("CHAT_ID mangler")
     if not TOKEN or not CHAT_ID:
-        raise ValueError("Mangler TOKEN_BOT_LONG eller CHAT_ID_LONG")
+        raise ValueError("Mangler TOKEN_BOT eller CHAT_ID")
 
 
 def send_telegram(message: str) -> bool:
-    url = f"https://api.telegram.org/bot{TOKEN_BOT_LONG}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN_BOT}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID_LONG,
+        "chat_id": CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
     }
