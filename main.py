@@ -18,9 +18,9 @@ def validate_env() -> None:
 
 
 def send_telegram(message: str) -> bool:
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN_BOT_LONG}/sendMessage"
     payload = {
-        "chat_id": CHAT_ID,
+        "chat_id": CHAT_ID_LONG,
         "text": message,
         "parse_mode": "HTML",
     }
