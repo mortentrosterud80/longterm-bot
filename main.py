@@ -118,6 +118,20 @@ def determine_message_type(run_date: date) -> str | None:
     return None
 
 
+def resolve_run_date() -> date:
+    force_run_date = os.getenv("FORCE_RUN_DATE")
+    if force_run_date:
+        try:
+            parsed = datetime.strptime(force_run_date, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError("FORCE_RUN_DATE må være på format YYYY-MM-DD") from exc
+        print(f"[LONGTERM] FORCE_RUN_DATE aktiv: {parsed.isoformat()}")
+        return parsed
+
+    now_oslo = datetime.now(ZoneInfo("Europe/Oslo"))
+    return now_oslo.date()
+
+
 def load_holdings() -> dict[str, float]:
     raw = os.getenv("LONG_PORTFOLIO_HOLDINGS")
     if not raw:
@@ -461,22 +475,14 @@ def main() -> None:
     validate_env()
 
     now_oslo = datetime.now(ZoneInfo("Europe/Oslo"))
-    force_run_date = os.getenv("FORCE_RUN_DATE")
-    if force_run_date:
-        try:
-            run_date = date.fromisoformat(force_run_date)
-        except ValueError as exc:
-            raise ValueError(
-                f"Ugyldig FORCE_RUN_DATE '{force_run_date}'. Forventet format: YYYY-MM-DD"
-            ) from exc
-        print(f"[LONGTERM] FORCE_RUN_DATE aktiv: {run_date.isoformat()}")
-    else:
-        run_date = now_oslo.date()
+    run_date = resolve_run_date()
 
     message_type = determine_message_type(run_date)
     print(f"[LONGTERM] now_oslo={now_oslo.isoformat()}")
     print(f"[LONGTERM] run_date={run_date.isoformat()}")
-    print(f"[LONGTERM] message_type={message_type}")
+    print(
+        f"[LONGTERM] month={run_date.month} day={run_date.day} message_type={message_type}"
+    )
     if message_type is None:
         print(f"Ingen planlagt melding for {run_date.strftime('%d.%m.%Y')}")
         return
