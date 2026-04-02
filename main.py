@@ -463,19 +463,20 @@ def main() -> None:
     now_oslo = datetime.now(ZoneInfo("Europe/Oslo"))
     force_run_date = os.getenv("FORCE_RUN_DATE")
     if force_run_date:
-        run_date = date.fromisoformat(force_run_date)
+        try:
+            run_date = date.fromisoformat(force_run_date)
+        except ValueError as exc:
+            raise ValueError(
+                f"Ugyldig FORCE_RUN_DATE '{force_run_date}'. Forventet format: YYYY-MM-DD"
+            ) from exc
+        print(f"[LONGTERM] FORCE_RUN_DATE aktiv: {run_date.isoformat()}")
     else:
         run_date = now_oslo.date()
 
     message_type = determine_message_type(run_date)
-    print(
-        "Debug schedule: "
-        f"now_oslo={now_oslo.isoformat()}, "
-        f"run_date={run_date.isoformat()}, "
-        f"month={run_date.month}, "
-        f"day={run_date.day}, "
-        f"message_type={message_type}"
-    )
+    print(f"[LONGTERM] now_oslo={now_oslo.isoformat()}")
+    print(f"[LONGTERM] run_date={run_date.isoformat()}")
+    print(f"[LONGTERM] message_type={message_type}")
     if message_type is None:
         print(f"Ingen planlagt melding for {run_date.strftime('%d.%m.%Y')}")
         return
