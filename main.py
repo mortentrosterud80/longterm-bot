@@ -1,7 +1,8 @@
 import json
 import os
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import requests
 import yfinance as yf
@@ -459,8 +460,22 @@ def build_quarterly_commentary(
 def main() -> None:
     validate_env()
 
-    run_date = datetime.now(timezone.utc).date()
+    now_oslo = datetime.now(ZoneInfo("Europe/Oslo"))
+    force_run_date = os.getenv("FORCE_RUN_DATE")
+    if force_run_date:
+        run_date = date.fromisoformat(force_run_date)
+    else:
+        run_date = now_oslo.date()
+
     message_type = determine_message_type(run_date)
+    print(
+        "Debug schedule: "
+        f"now_oslo={now_oslo.isoformat()}, "
+        f"run_date={run_date.isoformat()}, "
+        f"month={run_date.month}, "
+        f"day={run_date.day}, "
+        f"message_type={message_type}"
+    )
     if message_type is None:
         print(f"Ingen planlagt melding for {run_date.strftime('%d.%m.%Y')}")
         return
