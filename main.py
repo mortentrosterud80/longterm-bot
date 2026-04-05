@@ -22,7 +22,8 @@ class PortfolioPosition:
     display_name: str
     emoji: str
     target_weight: int
-    currency_suffix: str
+    local_currency: str
+    sanity_floor_price: float | None = None
 
 
 POSITIONS: dict[str, PortfolioPosition] = {
@@ -31,28 +32,29 @@ POSITIONS: dict[str, PortfolioPosition] = {
         display_name="KOG",
         emoji="🛡️",
         target_weight=30,
-        currency_suffix=" kr",
+        local_currency="NOK",
     ),
     "NOVO": PortfolioPosition(
-        symbol="NVO",
+        symbol="NOVO-B.CO",
         display_name="NOVO",
         emoji="💊",
         target_weight=30,
-        currency_suffix="",
+        local_currency="DKK",
+        sanity_floor_price=100.0,
     ),
     "SOFI": PortfolioPosition(
         symbol="SOFI",
         display_name="SOFI",
         emoji="📱",
         target_weight=20,
-        currency_suffix="",
+        local_currency="USD",
     ),
     "TOMRA": PortfolioPosition(
         symbol="TOM.OL",
         display_name="TOMRA",
         emoji="♻️",
         target_weight=20,
-        currency_suffix=" kr",
+        local_currency="NOK",
     ),
 }
 
@@ -61,6 +63,7 @@ POSITIONS: dict[str, PortfolioPosition] = {
 class StockSnapshot:
     key: str
     symbol: str
+    local_currency: str
     display_name: str
     emoji: str
     target_weight: int
@@ -81,8 +84,11 @@ class StockSnapshot:
     assessment: str
     avg_price: float | None
     invested_value: float | None
+    invested_value_nok: float | None
     current_value: float | None
+    current_value_nok: float | None
     previous_value: float | None
+    previous_value_nok: float | None
     change_since_last: float | None
     change_since_last_pct: float | None
     change_emoji: str
@@ -106,8 +112,6 @@ def normalize_holding_key(key: str) -> str:
 
 
 def holding_log_label(key: str) -> str:
-    if key == "NOVO":
-        return "NVO"
     return key
 
 
@@ -302,7 +306,7 @@ def update_longterm_holding(
 
 def calculate_longterm_weights(
     state: dict[str, dict[str, float | str]],
-    market_data: dict[str, float | None],
+    market_data_nok: dict[str, float | None],
 ) -> tuple[dict[str, float], float]:
     market_values: dict[str, float] = {}
     for key in POSITIONS:
@@ -313,7 +317,7 @@ def calculate_longterm_weights(
         else:
             shares = max(float(holding.get("shares", 1.0)), 0.0)
 
-        price = market_data.get(key)
+        price = market_data_nok.get(key)
         value = 0.0 if price is None else shares * price
         market_values[key] = value
 
@@ -326,7 +330,7 @@ def calculate_longterm_weights(
     for key, value in market_values.items():
         weight = round((value / total_value) * 100, 1)
         weights[key] = weight
-        price = market_data.get(key)
+        price = market_data_nok.get(key)
         holding = state.get(key, {})
         shares = max(float(holding.get("shares", 1.0)), 0.0)
         print(
@@ -365,6 +369,31 @@ def fetch_market_data(symbol: str) -> tuple[float | None, float | None, float | 
         print(f"Klarte ikke hente markedsdata for {symbol}: {exc}")
         return None, None, None, None
 
+
+
+
+def fetch_fx_rate_to_nok(currency: str) -> float | None:
+    if not currency:
+        return None
+    if currency in {"NOK", "KR"}:
+        return 1.0
+
+    symbol = f"{currency}NOK=X"
+    try:
+        ticker = yf.Ticker(symbol)
+        history = ticker.history(period="5d", interval="1d", auto_adjust=False)
+        closes = history.get("Close")
+        if closes is None:
+            raise DataFetchError(f"Fant ikke FX Close-serie for {symbol}")
+
+        closes = closes.dropna()
+        if closes.empty:
+            raise DataFetchError(f"Ingen FX-kursdata for {symbol}")
+
+        return round(float(closes.iloc[-1]), 6)
+    except Exception as exc:
+        print(f"Klarte ikke hente FX-rate for {currency}->NOK ({symbol}): {exc}")
+        return None
 
 def score_underweight(current_weight: float, target_weight: int) -> int:
     diff = round(target_weight - current_weight, 1)
@@ -488,10 +517,18 @@ def load_performance_snapshot() -> PortfolioPerformanceSnapshot | None:
             key = normalize_holding_key(raw_key)
             if key not in POSITIONS or not isinstance(value_data, dict):
                 continue
-            value = value_data.get("value")
-            if value is None:
-                continue
-            tickers[key] = {"value": float(value)}
+            ticker_data: dict[str, float] = {}
+            local_value = value_data.get("local_value")
+            if local_value is not None:
+                ticker_data["local_value"] = float(local_value)
+            legacy_value = value_data.get("value")
+            if legacy_value is not None:
+                ticker_data["value"] = float(legacy_value)
+            value_nok = value_data.get("value_nok")
+            if value_nok is not None:
+                ticker_data["value_nok"] = float(value_nok)
+            if ticker_data:
+                tickers[key] = ticker_data
 
     last_report_date = str(parsed.get("last_report_date", ""))
     total_value = float(parsed.get("total_value", 0.0))
@@ -506,11 +543,15 @@ def load_performance_snapshot() -> PortfolioPerformanceSnapshot | None:
 
 
 def save_performance_snapshot(run_date: date, snapshots: list[StockSnapshot]) -> None:
-    total_value = sum(snapshot.current_value or 0.0 for snapshot in snapshots)
+    total_value = sum(snapshot.current_value_nok or 0.0 for snapshot in snapshots)
     payload = {
         "last_report_date": run_date.isoformat(),
         "tickers": {
-            snapshot.key: {"value": round(snapshot.current_value or 0.0, 2)} for snapshot in snapshots
+            snapshot.key: {
+                "local_value": round(snapshot.current_value or 0.0, 2),
+                "value_nok": round(snapshot.current_value_nok or 0.0, 2),
+            }
+            for snapshot in snapshots
         },
         "total_value": round(total_value, 2),
     }
@@ -526,24 +567,53 @@ def save_performance_snapshot(run_date: date, snapshots: list[StockSnapshot]) ->
 def build_snapshots() -> list[StockSnapshot]:
     state = load_longterm_portfolio_state()
     previous_snapshot = load_performance_snapshot()
-    prices: dict[str, float | None] = {}
+    prices_local: dict[str, float | None] = {}
+    prices_nok: dict[str, float | None] = {}
     month_ago_prices: dict[str, float | None] = {}
     changes: dict[str, float | None] = {}
     currencies: dict[str, str | None] = {}
+    fx_to_nok: dict[str, float | None] = {}
     shares_by_ticker: dict[str, float | None] = {}
 
     for key, position in POSITIONS.items():
-        price, month_ago_price, one_month_change, currency = fetch_market_data(position.symbol)
-        prices[key] = price
+        price, month_ago_price, one_month_change, yahoo_currency = fetch_market_data(position.symbol)
+        resolved_currency = position.local_currency
+        if yahoo_currency and yahoo_currency != position.local_currency:
+            print(
+                f"[LONGTERM] {position.display_name} currency override: yahoo={yahoo_currency} configured={position.local_currency}"
+            )
+
+        fx_rate = fetch_fx_rate_to_nok(resolved_currency)
+        price_nok = None if price is None or fx_rate is None else price * fx_rate
+
+        if (
+            key == "NOVO"
+            and price is not None
+            and position.sanity_floor_price is not None
+            and price < position.sanity_floor_price
+        ):
+            print(
+                f"[LONGTERM][WARN] NOVO price sanity check triggered: {price:.2f} {resolved_currency} "
+                f"(symbol={position.symbol}, expected > {position.sanity_floor_price:.2f})"
+            )
+
+        print(
+            f"[LONGTERM] ticker mapping: {key} -> {position.symbol} currency={resolved_currency} "
+            f"fx_to_nok={fx_rate} price_local={price} price_nok={price_nok}"
+        )
+
+        prices_local[key] = price
+        prices_nok[key] = price_nok
         month_ago_prices[key] = month_ago_price
         changes[key] = one_month_change
-        currencies[key] = currency
+        currencies[key] = resolved_currency
+        fx_to_nok[key] = fx_rate
         if key in state:
             shares_by_ticker[key] = max(float(state[key].get("shares", 0.0)), 0.0)
         else:
             shares_by_ticker[key] = None
 
-    weights, _ = calculate_longterm_weights(state, prices)
+    weights, _ = calculate_longterm_weights(state, prices_nok)
     snapshots: list[StockSnapshot] = []
 
     for key, position in POSITIONS.items():
@@ -556,7 +626,7 @@ def build_snapshots() -> list[StockSnapshot]:
         trend_text = describe_trend(change)
         status_score = score_momentum(change)
         month_ago_price = month_ago_prices[key]
-        direction = build_price_direction_emoji(prices[key], month_ago_price)
+        direction = build_price_direction_emoji(prices_local[key], month_ago_price)
 
         # Regelbasert longterm-vurdering: undervekt mot målvekt + trend/momentum + verdi/attraktivitet.
         # Nyhetsanalyse brukes ikke i denne poengmodellen.
@@ -586,13 +656,24 @@ def build_snapshots() -> list[StockSnapshot]:
         invested_value = None
         if shares is not None and avg_price is not None and avg_price > 0:
             invested_value = shares * avg_price
+        invested_value_nok = None
+        if invested_value is not None and fx_to_nok[key] is not None:
+            invested_value_nok = invested_value * float(fx_to_nok[key])
         current_value = None
-        if shares is not None and prices[key] is not None:
-            current_value = shares * float(prices[key])
+        if shares is not None and prices_local[key] is not None:
+            current_value = shares * float(prices_local[key])
+        current_value_nok = None
+        if current_value is not None and fx_to_nok[key] is not None:
+            current_value_nok = current_value * float(fx_to_nok[key])
 
         previous_value = None
+        previous_value_nok = None
         if previous_snapshot is not None:
-            previous_value = previous_snapshot.tickers.get(key, {}).get("value")
+            previous_entry = previous_snapshot.tickers.get(key, {})
+            previous_value = previous_entry.get("local_value")
+            if previous_value is None:
+                previous_value = previous_entry.get("value")
+            previous_value_nok = previous_entry.get("value_nok")
 
         change_since_last = None
         change_since_last_pct = None
@@ -602,9 +683,13 @@ def build_snapshots() -> list[StockSnapshot]:
                 change_since_last_pct = (change_since_last / previous_value) * 100
         change_emoji = determine_change_emoji(change_since_last)
 
-        print(f"[LONGTERM] {position.display_name} invested={invested_value}")
-        print(f"[LONGTERM] {position.display_name} current_value={current_value}")
+        print(
+            f"[LONGTERM] {position.display_name} values: local_currency={currencies[key]} "
+            f"invested_local={invested_value} invested_nok={invested_value_nok} "
+            f"current_local={current_value} current_nok={current_value_nok}"
+        )
         print(f"[LONGTERM] {position.display_name} previous_value={previous_value}")
+        print(f"[LONGTERM] {position.display_name} previous_value_nok={previous_value_nok}")
         print(
             f"[LONGTERM] {position.display_name} change_since_last={change_since_last} pct={change_since_last_pct}"
         )
@@ -614,10 +699,11 @@ def build_snapshots() -> list[StockSnapshot]:
             StockSnapshot(
                 key=key,
                 symbol=position.symbol,
+                local_currency=currencies[key] or position.local_currency,
                 display_name=position.display_name,
                 emoji=position.emoji,
                 target_weight=position.target_weight,
-                price=prices[key],
+                price=prices_local[key],
                 month_ago_price=month_ago_price,
                 price_currency=currencies[key],
                 one_month_change=change,
@@ -634,8 +720,11 @@ def build_snapshots() -> list[StockSnapshot]:
                 assessment=build_assessment(weight, position.target_weight, buy_score, trend_text),
                 avg_price=avg_price,
                 invested_value=invested_value,
+                invested_value_nok=invested_value_nok,
                 current_value=current_value,
+                current_value_nok=current_value_nok,
                 previous_value=previous_value,
+                previous_value_nok=previous_value_nok,
                 change_since_last=change_since_last,
                 change_since_last_pct=change_since_last_pct,
                 change_emoji=change_emoji,
@@ -653,13 +742,9 @@ def format_percentage(value: float | None) -> str:
 
 
 def resolve_price_currency(snapshot: StockSnapshot) -> str:
-    if snapshot.symbol.endswith(".OL"):
+    if snapshot.local_currency == "NOK":
         return "kr"
-    if snapshot.key == "SOFI":
-        return "USD"
-    if snapshot.key == "NOVO":
-        return snapshot.price_currency or "DKK"
-    return snapshot.price_currency or ""
+    return snapshot.local_currency
 
 
 def format_price(snapshot: StockSnapshot) -> str:
@@ -695,13 +780,13 @@ def format_shares(snapshot: StockSnapshot) -> str:
 def format_invested(snapshot: StockSnapshot) -> str:
     if snapshot.invested_value is None:
         return "Investert: ikke tilgjengelig"
-    return f"Investert: {format_number_no_decimals(snapshot.invested_value)} kr"
+    return f"Investert: {format_number_no_decimals(snapshot.invested_value)} {resolve_price_currency(snapshot)}"
 
 
 def format_current_value(snapshot: StockSnapshot) -> str:
     if snapshot.current_value is None:
         return "Verdi nå: ikke tilgjengelig"
-    return f"Verdi nå: {format_number_no_decimals(snapshot.current_value)} kr"
+    return f"Verdi nå: {format_number_no_decimals(snapshot.current_value)} {resolve_price_currency(snapshot)}"
 
 
 def format_since_last(snapshot: StockSnapshot) -> str:
@@ -710,16 +795,16 @@ def format_since_last(snapshot: StockSnapshot) -> str:
     normalized_change = 0.0 if abs(snapshot.change_since_last) < 0.5 else snapshot.change_since_last
     normalized_pct = 0.0 if abs(snapshot.change_since_last_pct) < 0.05 else snapshot.change_since_last_pct
     sign = "+" if normalized_change > 0 else ""
-    kr_text = f"{sign}{format_number_no_decimals(normalized_change)}"
+    change_text = f"{sign}{format_number_no_decimals(normalized_change)}"
     pct_text = f"{normalized_pct:+.1f}%".replace(".", ",")
-    return f"{snapshot.change_emoji} Siden sist: {kr_text} kr ({pct_text})"
+    return f"{snapshot.change_emoji} Siden sist: {change_text} {resolve_price_currency(snapshot)} ({pct_text})"
 
 
 def format_portfolio_summary(snapshots: list[StockSnapshot], include_post_buy_value: bool = False) -> list[str]:
-    invested_total = sum(snapshot.invested_value or 0.0 for snapshot in snapshots)
-    current_total = sum(snapshot.current_value or 0.0 for snapshot in snapshots)
+    invested_total = sum(snapshot.invested_value_nok or 0.0 for snapshot in snapshots)
+    current_total = sum(snapshot.current_value_nok or 0.0 for snapshot in snapshots)
     previous_total_values = [
-        snapshot.previous_value for snapshot in snapshots if snapshot.previous_value is not None
+        snapshot.previous_value_nok for snapshot in snapshots if snapshot.previous_value_nok is not None
     ]
     previous_total = sum(previous_total_values) if previous_total_values else None
     since_last_value = None
