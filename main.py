@@ -13,6 +13,7 @@ CHAT_ID = os.getenv("CHAT_ID") or os.getenv("CHAT_ID_LONG")
 DEFAULT_NEW_CAPITAL = 30_000
 DIVIDER = "────────────────────"
 STATE_FILE_PATH = Path(__file__).with_name("longterm_portfolio_state.json")
+PERFORMANCE_SNAPSHOT_PATH = Path(__file__).with_name("longterm_performance_snapshot.json")
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,20 @@ class StockSnapshot:
     buy_score: int
     action: str
     assessment: str
+    avg_price: float | None
+    invested_value: float | None
+    current_value: float | None
+    previous_value: float | None
+    change_since_last: float | None
+    change_since_last_pct: float | None
+    change_emoji: str
+
+
+@dataclass
+class PortfolioPerformanceSnapshot:
+    last_report_date: str
+    tickers: dict[str, dict[str, float]]
+    total_value: float
 
 
 class DataFetchError(RuntimeError):
@@ -441,8 +456,76 @@ def build_price_direction_emoji(price: float | None, month_ago_price: float | No
     return "↘️"
 
 
+def format_number_no_decimals(value: float) -> str:
+    return f"{int(round(value)):,}".replace(",", " ")
+
+
+def determine_change_emoji(change_value: float | None) -> str:
+    if change_value is None:
+        return "➖"
+    if abs(change_value) < 0.5:
+        return "➖"
+    if change_value > 0:
+        return "📈"
+    return "📉"
+
+
+def load_performance_snapshot() -> PortfolioPerformanceSnapshot | None:
+    if not PERFORMANCE_SNAPSHOT_PATH.exists():
+        print("[LONGTERM] performance snapshot mangler, bruker fallback")
+        return None
+
+    try:
+        parsed = json.loads(PERFORMANCE_SNAPSHOT_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        print("[LONGTERM] performance snapshot er ugyldig JSON, bruker fallback")
+        return None
+
+    raw_tickers = parsed.get("tickers", {})
+    tickers: dict[str, dict[str, float]] = {}
+    if isinstance(raw_tickers, dict):
+        for raw_key, value_data in raw_tickers.items():
+            key = normalize_holding_key(raw_key)
+            if key not in POSITIONS or not isinstance(value_data, dict):
+                continue
+            value = value_data.get("value")
+            if value is None:
+                continue
+            tickers[key] = {"value": float(value)}
+
+    last_report_date = str(parsed.get("last_report_date", ""))
+    total_value = float(parsed.get("total_value", 0.0))
+    print(
+        f"[LONGTERM] performance snapshot loaded last_report_date={last_report_date} total_value={total_value:.2f}"
+    )
+    return PortfolioPerformanceSnapshot(
+        last_report_date=last_report_date,
+        tickers=tickers,
+        total_value=total_value,
+    )
+
+
+def save_performance_snapshot(run_date: date, snapshots: list[StockSnapshot]) -> None:
+    total_value = sum(snapshot.current_value or 0.0 for snapshot in snapshots)
+    payload = {
+        "last_report_date": run_date.isoformat(),
+        "tickers": {
+            snapshot.key: {"value": round(snapshot.current_value or 0.0, 2)} for snapshot in snapshots
+        },
+        "total_value": round(total_value, 2),
+    }
+    PERFORMANCE_SNAPSHOT_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        f"[LONGTERM] performance snapshot saved date={payload['last_report_date']} total_value={payload['total_value']:.2f}"
+    )
+
+
 def build_snapshots() -> list[StockSnapshot]:
     state = load_longterm_portfolio_state()
+    previous_snapshot = load_performance_snapshot()
     prices: dict[str, float | None] = {}
     month_ago_prices: dict[str, float | None] = {}
     changes: dict[str, float | None] = {}
@@ -494,6 +577,39 @@ def build_snapshots() -> list[StockSnapshot]:
             f"(underweight+trend+value)"
         )
 
+        holding = state.get(key, {})
+        avg_price_raw = holding.get("avg_price")
+        avg_price = None
+        if avg_price_raw is not None:
+            avg_price = float(avg_price_raw)
+        shares = shares_by_ticker[key]
+        invested_value = None
+        if shares is not None and avg_price is not None and avg_price > 0:
+            invested_value = shares * avg_price
+        current_value = None
+        if shares is not None and prices[key] is not None:
+            current_value = shares * float(prices[key])
+
+        previous_value = None
+        if previous_snapshot is not None:
+            previous_value = previous_snapshot.tickers.get(key, {}).get("value")
+
+        change_since_last = None
+        change_since_last_pct = None
+        if current_value is not None and previous_value is not None:
+            change_since_last = current_value - previous_value
+            if previous_value > 0:
+                change_since_last_pct = (change_since_last / previous_value) * 100
+        change_emoji = determine_change_emoji(change_since_last)
+
+        print(f"[LONGTERM] {position.display_name} invested={invested_value}")
+        print(f"[LONGTERM] {position.display_name} current_value={current_value}")
+        print(f"[LONGTERM] {position.display_name} previous_value={previous_value}")
+        print(
+            f"[LONGTERM] {position.display_name} change_since_last={change_since_last} pct={change_since_last_pct}"
+        )
+        print(f"[LONGTERM] {position.display_name} change_emoji={change_emoji}")
+
         snapshots.append(
             StockSnapshot(
                 key=key,
@@ -516,6 +632,13 @@ def build_snapshots() -> list[StockSnapshot]:
                 buy_score=buy_score,
                 action=determine_action(status_score, weight, position.target_weight),
                 assessment=build_assessment(weight, position.target_weight, buy_score, trend_text),
+                avg_price=avg_price,
+                invested_value=invested_value,
+                current_value=current_value,
+                previous_value=previous_value,
+                change_since_last=change_since_last,
+                change_since_last_pct=change_since_last_pct,
+                change_emoji=change_emoji,
             )
         )
 
@@ -566,7 +689,87 @@ def format_money(value: float) -> str:
 def format_shares(snapshot: StockSnapshot) -> str:
     if snapshot.shares is None:
         return "Antall: ikke tilgjengelig"
-    return f"Antall: {int(snapshot.shares)} aksjer"
+    return f"Antall: {int(snapshot.shares)}"
+
+
+def format_invested(snapshot: StockSnapshot) -> str:
+    if snapshot.invested_value is None:
+        return "Investert: ikke tilgjengelig"
+    return f"Investert: {format_number_no_decimals(snapshot.invested_value)} kr"
+
+
+def format_current_value(snapshot: StockSnapshot) -> str:
+    if snapshot.current_value is None:
+        return "Verdi nå: ikke tilgjengelig"
+    return f"Verdi nå: {format_number_no_decimals(snapshot.current_value)} kr"
+
+
+def format_since_last(snapshot: StockSnapshot) -> str:
+    if snapshot.change_since_last is None or snapshot.change_since_last_pct is None:
+        return "➖ Siden sist: ikke tilgjengelig"
+    normalized_change = 0.0 if abs(snapshot.change_since_last) < 0.5 else snapshot.change_since_last
+    normalized_pct = 0.0 if abs(snapshot.change_since_last_pct) < 0.05 else snapshot.change_since_last_pct
+    sign = "+" if normalized_change > 0 else ""
+    kr_text = f"{sign}{format_number_no_decimals(normalized_change)}"
+    pct_text = f"{normalized_pct:+.1f}%".replace(".", ",")
+    return f"{snapshot.change_emoji} Siden sist: {kr_text} kr ({pct_text})"
+
+
+def format_portfolio_summary(snapshots: list[StockSnapshot], include_post_buy_value: bool = False) -> list[str]:
+    invested_total = sum(snapshot.invested_value or 0.0 for snapshot in snapshots)
+    current_total = sum(snapshot.current_value or 0.0 for snapshot in snapshots)
+    previous_total_values = [
+        snapshot.previous_value for snapshot in snapshots if snapshot.previous_value is not None
+    ]
+    previous_total = sum(previous_total_values) if previous_total_values else None
+    since_last_value = None
+    since_last_pct = None
+    if previous_total is not None:
+        since_last_value = current_total - previous_total
+        if previous_total > 0:
+            since_last_pct = (since_last_value / previous_total) * 100
+
+    pnl_total = current_total - invested_total
+    pnl_pct = (pnl_total / invested_total * 100) if invested_total > 0 else None
+    change_emoji = determine_change_emoji(since_last_value)
+
+    print(f"[LONGTERM] portfolio invested_total={invested_total}")
+    print(f"[LONGTERM] portfolio current_total={current_total}")
+    print(f"[LONGTERM] portfolio previous_total={previous_total}")
+    print(f"[LONGTERM] portfolio change_emoji={change_emoji}")
+    print(f"[LONGTERM] portfolio pnl_total={pnl_total}")
+
+    lines = [
+        DIVIDER,
+        "",
+        "📊 Porteføljeoppsummering",
+        "",
+        f"Totalt investert: {format_number_no_decimals(invested_total)} kr",
+        f"Total verdi nå: {format_number_no_decimals(current_total)} kr",
+    ]
+    if since_last_value is None or since_last_pct is None:
+        lines.append("➖ Siden sist: ikke tilgjengelig")
+    else:
+        normalized_since_last = 0.0 if abs(since_last_value) < 0.5 else since_last_value
+        normalized_since_last_pct = 0.0 if abs(since_last_pct) < 0.05 else since_last_pct
+        sign = "+" if normalized_since_last > 0 else ""
+        since_last_kr = f"{sign}{format_number_no_decimals(normalized_since_last)}"
+        since_last_pct_text = f"{normalized_since_last_pct:+.1f}%".replace(".", ",")
+        lines.append(f"{change_emoji} Siden sist: {since_last_kr} kr ({since_last_pct_text})")
+
+    if pnl_pct is None:
+        lines.append("Total gevinst/tap: ikke tilgjengelig")
+    else:
+        sign = "+" if pnl_total > 0 else ""
+        pnl_kr = f"{sign}{format_number_no_decimals(pnl_total)}"
+        pnl_pct_text = f"{pnl_pct:+.1f}%".replace(".", ",")
+        lines.append(f"Total gevinst/tap: {pnl_kr} kr ({pnl_pct_text})")
+
+    if include_post_buy_value:
+        lines.append(
+            f"Verdi etter nytt kjøp: {format_number_no_decimals(current_total + DEFAULT_NEW_CAPITAL)} kr"
+        )
+    return lines
 
 
 def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAULT_NEW_CAPITAL) -> dict[str, int]:
@@ -609,14 +812,8 @@ def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAUL
 
 
 def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> str:
-    title = "🔥 VISUELT – MÅNEDLIG (20.)"
-    closing_line = "👉 Ingen handling – kun observasjon"
-
     lines = [
-        title,
-        "",
-        f"📊 Longportefølje – {run_date.strftime('%d.%m.%Y')}",
-        "(Statusoppdatering)",
+        f"💼 Longportefølje – {run_date.strftime('%d.%m.%Y')}",
         "",
     ]
 
@@ -630,33 +827,22 @@ def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> st
                 f"{snapshot.emoji} {snapshot.display_name}",
                 format_price(snapshot),
                 format_shares(snapshot),
-                f"Score: {snapshot.status_score}/5",
+                format_invested(snapshot),
+                format_current_value(snapshot),
+                format_since_last(snapshot),
                 f"Vekt: {snapshot.weight:.1f}% (mål {snapshot.target_weight}%)",
-                f"Kjøpsscore: {snapshot.buy_score}/15",
                 f"Vurdering: {snapshot.assessment}",
                 "",
             ]
         )
-
-    observations = build_monthly_commentary(snapshots)
-    lines.extend(
-        [
-            DIVIDER,
-            "🧭 Kort vurdering:",
-            *observations,
-            "",
-            closing_line,
-        ]
-    )
+    lines.extend(format_portfolio_summary(snapshots))
     return "\n".join(lines)
 
 
 def format_quarterly_message(run_date: date, snapshots: list[StockSnapshot]) -> str:
     allocations = allocate_capital(snapshots)
     lines = [
-        "💰 VISUELT – KVARTAL",
-        "",
-        f"📊 Longportefølje – {run_date.strftime('%d.%m.%Y')}",
+        f"💼 Longportefølje – {run_date.strftime('%d.%m.%Y')}",
         f"({DEFAULT_NEW_CAPITAL:,.0f} kr til fordeling)".replace(",", " "),
         "",
     ]
@@ -671,7 +857,9 @@ def format_quarterly_message(run_date: date, snapshots: list[StockSnapshot]) -> 
                 f"{snapshot.emoji} {snapshot.display_name}",
                 format_price(snapshot),
                 format_shares(snapshot),
-                f"Score: {snapshot.status_score}/5",
+                format_invested(snapshot),
+                format_current_value(snapshot),
+                format_since_last(snapshot),
                 f"Vekt: {snapshot.weight:.1f}% (mål {snapshot.target_weight}%)",
                 f"Kjøpsscore: {snapshot.buy_score}/15",
                 f"Vurdering: {snapshot.assessment}",
@@ -679,21 +867,11 @@ def format_quarterly_message(run_date: date, snapshots: list[StockSnapshot]) -> 
             ]
         )
 
-    lines.extend([DIVIDER, "💰 Anbefalt fordeling:"])
+    lines.extend([DIVIDER, "", f"💰 Anbefalt fordeling ({DEFAULT_NEW_CAPITAL:,.0f} kr)".replace(",", " "), ""])
     for snapshot in snapshots:
         amount = f"{allocations[snapshot.key]:,} kr".replace(",", " ")
-        lines.append(f"{snapshot.emoji} {snapshot.display_name:<6} {amount}")
-
-    lines.extend(
-        [
-            "",
-            DIVIDER,
-            "🧭 Kommentar:",
-            *build_quarterly_commentary(snapshots, allocations),
-            "",
-            "👉 Strategi: Fyll opp undervekt + kvalitet først",
-        ]
-    )
+        lines.append(f"{snapshot.display_name}: {amount}")
+    lines.extend(format_portfolio_summary(snapshots, include_post_buy_value=True))
     return "\n".join(lines)
 
 
@@ -746,6 +924,7 @@ def main() -> None:
 
     sent = send_telegram(message)
     if sent:
+        save_performance_snapshot(run_date, snapshots)
         print("Telegram-melding ble sendt")
     else:
         print("Telegram-melding ble ikke sendt")
