@@ -867,31 +867,98 @@ def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAUL
             score = max(1, score - 2)
         weighted_scores[snapshot.key] = max(score, 1)
 
+    def log_allocations(stage: str, allocations: dict[str, int]) -> None:
+        ordered = ", ".join(f"{snapshot.key}={allocations[snapshot.key]}" for snapshot in snapshots)
+        print(f"[LONGTERM] {stage}: {ordered}")
+
+    snapshots_by_key = {snapshot.key: snapshot for snapshot in snapshots}
+
+    def add_priority(key: str) -> tuple[float, float, float]:
+        snapshot = snapshots_by_key[key]
+        under_target = snapshot.target_weight - snapshot.weight
+        current_vs_target = snapshot.weight / snapshot.target_weight if snapshot.target_weight else float("inf")
+        return (snapshot.buy_score, under_target, -current_vs_target)
+
+    def reduce_priority(key: str) -> tuple[float, float, float]:
+        snapshot = snapshots_by_key[key]
+        over_target = snapshot.weight - snapshot.target_weight
+        current_vs_target = snapshot.weight / snapshot.target_weight if snapshot.target_weight else float("inf")
+        return (snapshot.buy_score, -over_target, -current_vs_target)
+
     total_score = sum(weighted_scores.values())
     if total_score <= 0:
         equal_amount = total_capital // len(snapshots)
-        return {snapshot.key: equal_amount for snapshot in snapshots}
+        fallback_allocations = {snapshot.key: equal_amount for snapshot in snapshots}
+        log_allocations("raw allocation", fallback_allocations)
+        log_allocations("rounded allocation", fallback_allocations)
+        log_allocations("final allocation", fallback_allocations)
+        return fallback_allocations
 
     raw_allocations = {
         key: (score / total_score) * total_capital for key, score in weighted_scores.items()
     }
-    rounded_allocations = {
-        key: int(round(amount / 500.0) * 500) for key, amount in raw_allocations.items()
-    }
+    log_allocations("raw allocation", {key: int(round(raw_allocations[key])) for key in raw_allocations})
 
-    diff = total_capital - sum(rounded_allocations.values())
-    if diff != 0:
-        ordered_keys = sorted(weighted_scores, key=weighted_scores.get, reverse=diff > 0)
-        step = 500 if diff > 0 else -500
-        remaining = abs(diff)
-        index = 0
-        while remaining > 0 and ordered_keys:
-            key = ordered_keys[index % len(ordered_keys)]
-            candidate = rounded_allocations[key] + step
-            if candidate >= 0:
-                rounded_allocations[key] = candidate
-                remaining -= 500
-            index += 1
+    rounded_allocations = {
+        key: int(round(amount / 1000.0) * 1000) for key, amount in raw_allocations.items()
+    }
+    rounded_allocations = {
+        key: amount if amount == 0 or amount >= 2000 else 0 for key, amount in rounded_allocations.items()
+    }
+    log_allocations("rounded allocation", rounded_allocations)
+
+    max_iterations = 10_000
+    iterations = 0
+    while sum(rounded_allocations.values()) != total_capital and iterations < max_iterations:
+        iterations += 1
+        current_total = sum(rounded_allocations.values())
+
+        if current_total < total_capital:
+            remaining = total_capital - current_total
+            non_zero_keys = [key for key, amount in rounded_allocations.items() if amount >= 2000]
+            addable_keys = (
+                sorted(non_zero_keys, key=add_priority, reverse=True)
+                if non_zero_keys
+                else sorted(rounded_allocations, key=add_priority, reverse=True)
+            )
+            applied = False
+            for key in addable_keys:
+                if rounded_allocations[key] == 0:
+                    if remaining >= 2000:
+                        rounded_allocations[key] = 2000
+                        applied = True
+                        break
+                    continue
+
+                rounded_allocations[key] += 1000
+                applied = True
+                break
+            if not applied:
+                break
+        else:
+            reducible_keys = [key for key, amount in rounded_allocations.items() if amount >= 2000]
+            reducible_keys = sorted(reducible_keys, key=reduce_priority)
+            applied = False
+            for key in reducible_keys:
+                amount = rounded_allocations[key]
+                if amount >= 3000:
+                    rounded_allocations[key] -= 1000
+                    applied = True
+                    break
+                if amount == 2000:
+                    rounded_allocations[key] = 0
+                    applied = True
+                    break
+            if not applied:
+                break
+
+    if sum(rounded_allocations.values()) != total_capital:
+        raise ValueError(
+            f"Klarte ikke å justere anbefalt fordeling til {total_capital} kr "
+            f"(nåværende sum: {sum(rounded_allocations.values())} kr)"
+        )
+
+    log_allocations("final allocation", rounded_allocations)
 
     return rounded_allocations
 
