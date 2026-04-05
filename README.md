@@ -29,9 +29,39 @@ Boten støtter både gamle og nye navn på Telegram-variabler:
 - `TOKEN_BOT` eller `TOKEN_BOT_LONG`
 - `CHAT_ID` eller `CHAT_ID_LONG`
 
-For å regne ut porteføljevekter bør du også sette beholdningene som JSON i:
+For å regne ut porteføljevekter leser boten beholdninger i denne rekkefølgen:
 
-- `LONG_PORTFOLIO_HOLDINGS`
+1. `longterm_portfolio_state.json` (primærkilde, persistent state)
+2. `LONG_PORTFOLIO_HOLDINGS` (fallback)
+3. `shares=1` per ticker (siste nødløsning)
+
+### `longterm_portfolio_state.json`
+
+Statefilen ligger i prosjektroten og støtter disse feltene per ticker:
+
+- `shares`
+- `avg_price`
+- `currency`
+- `market_value_nok` (valgfri referanseverdi)
+
+Eksempel:
+
+```json
+{
+  "KOG": {"shares": 143, "avg_price": 340.42, "currency": "NOK", "market_value_nok": 59896},
+  "NVO": {"shares": 66, "avg_price": 339.71, "currency": "DKK", "market_value_nok": 23581},
+  "SOFI": {"shares": 94, "avg_price": 26.37, "currency": "USD", "market_value_nok": 14583},
+  "TOMRA": {"shares": 139, "avg_price": 136.19, "currency": "NOK", "market_value_nok": 16180}
+}
+```
+
+Vekter regnes alltid live som:
+
+- verdi per ticker = `shares * siste markedskurs`
+- totalverdi = sum av tickere
+- vekt = `tickerverdi / totalverdi * 100`
+
+### Fallback med miljøvariabel
 
 Eksempel:
 
@@ -39,7 +69,17 @@ Eksempel:
 {"KOG": 12, "NOVO": 8, "SOFI": 30, "TOMRA": 15}
 ```
 
-Hvis beholdninger ikke er satt, bruker boten `1` som standard per posisjon for å kunne lage en melding uten å krasje.
+Hvis både statefil og `LONG_PORTFOLIO_HOLDINGS` mangler, bruker boten `1` som standard per posisjon for å kunne lage en melding uten å krasje.
+
+### Enkel manuell oppdatering av state
+
+Bruk hjelpefunksjonen `update_longterm_holding(...)` når du vil oppdatere beholdning etter kjøp/salg:
+
+```python
+from main import update_longterm_holding
+
+update_longterm_holding("KOG", shares=150, avg_price=345.10)
+```
 
 ## Kjøring
 
