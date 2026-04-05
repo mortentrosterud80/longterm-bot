@@ -62,6 +62,7 @@ class StockSnapshot:
     emoji: str
     target_weight: int
     price: float | None
+    price_currency: str | None
     one_month_change: float | None
     trend_text: str
     status_score: int
@@ -151,7 +152,7 @@ def load_holdings() -> dict[str, float]:
     return holdings
 
 
-def fetch_market_data(symbol: str) -> tuple[float | None, float | None]:
+def fetch_market_data(symbol: str) -> tuple[float | None, float | None, str | None]:
     print(f"Henter markedsdata for {symbol}")
 
     try:
@@ -167,6 +168,7 @@ def fetch_market_data(symbol: str) -> tuple[float | None, float | None]:
             raise DataFetchError(f"Ingen kursdata for {symbol}")
 
         latest_price = round(float(closes.iloc[-1]), 2)
+        currency = history.attrs.get("currency")
         one_month_index = max(len(closes) - 22, 0)
         month_ago_price = float(closes.iloc[one_month_index])
         if month_ago_price <= 0:
@@ -174,10 +176,10 @@ def fetch_market_data(symbol: str) -> tuple[float | None, float | None]:
         else:
             one_month_change = round(((latest_price / month_ago_price) - 1) * 100, 1)
 
-        return latest_price, one_month_change
+        return latest_price, one_month_change, currency
     except Exception as exc:
         print(f"Klarte ikke hente markedsdata for {symbol}: {exc}")
-        return None, None
+        return None, None, None
 
 
 def calculate_weights(prices: dict[str, float | None], holdings: dict[str, float]) -> dict[str, float]:
@@ -280,11 +282,13 @@ def build_snapshots() -> list[StockSnapshot]:
     holdings = load_holdings()
     prices: dict[str, float | None] = {}
     changes: dict[str, float | None] = {}
+    currencies: dict[str, str | None] = {}
 
     for key, position in POSITIONS.items():
-        price, one_month_change = fetch_market_data(position.symbol)
+        price, one_month_change, currency = fetch_market_data(position.symbol)
         prices[key] = price
         changes[key] = one_month_change
+        currencies[key] = currency
 
     weights = calculate_weights(prices, holdings)
     snapshots: list[StockSnapshot] = []
@@ -307,6 +311,7 @@ def build_snapshots() -> list[StockSnapshot]:
                 emoji=position.emoji,
                 target_weight=position.target_weight,
                 price=prices[key],
+                price_currency=currencies[key],
                 one_month_change=change,
                 trend_text=trend_text,
                 status_score=status_score,
@@ -328,6 +333,27 @@ def format_percentage(value: float | None) -> str:
         return "n/a"
     sign = "+" if value > 0 else ""
     return f"{sign}{value:.1f}%"
+
+
+def resolve_price_currency(snapshot: StockSnapshot) -> str:
+    if snapshot.symbol.endswith(".OL"):
+        return "kr"
+    if snapshot.key == "SOFI":
+        return "USD"
+    if snapshot.key == "NOVO":
+        return snapshot.price_currency or "DKK"
+    return snapshot.price_currency or ""
+
+
+def format_price(snapshot: StockSnapshot) -> str:
+    if snapshot.price is None:
+        return "Kurs: ikke tilgjengelig"
+
+    value = f"{snapshot.price:.2f}".replace(".", ",")
+    currency = resolve_price_currency(snapshot)
+    if currency:
+        return f"Kurs: {value} {currency}"
+    return f"Kurs: {value}"
 
 
 def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAULT_NEW_CAPITAL) -> dict[str, int]:
@@ -382,9 +408,14 @@ def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> st
     ]
 
     for snapshot in snapshots:
+        render_currency = resolve_price_currency(snapshot) if snapshot.price is not None else "n/a"
+        print(
+            f"[LONGTERM] Render {snapshot.display_name} price={snapshot.price} currency={render_currency}"
+        )
         lines.extend(
             [
                 f"{snapshot.emoji} {snapshot.display_name}",
+                format_price(snapshot),
                 f"Trend: {snapshot.trend_text}",
                 f"Endring (1m): {format_percentage(snapshot.one_month_change)}",
                 f"Score: {snapshot.status_score}/5",
@@ -418,9 +449,14 @@ def format_quarterly_message(run_date: date, snapshots: list[StockSnapshot]) -> 
     ]
 
     for snapshot in snapshots:
+        render_currency = resolve_price_currency(snapshot) if snapshot.price is not None else "n/a"
+        print(
+            f"[LONGTERM] Render {snapshot.display_name} price={snapshot.price} currency={render_currency}"
+        )
         lines.extend(
             [
                 f"{snapshot.emoji} {snapshot.display_name}",
+                format_price(snapshot),
                 f"Score: {snapshot.status_score}/5",
                 f"Vekt: {snapshot.weight:.1f}% (mål {snapshot.target_weight}%)",
                 f"Kjøpsscore: {snapshot.buy_score}/15",
