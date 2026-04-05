@@ -64,11 +64,14 @@ class StockSnapshot:
     emoji: str
     target_weight: int
     price: float | None
+    month_ago_price: float | None
     price_currency: str | None
     one_month_change: float | None
+    price_direction: str
     trend_text: str
     status_score: int
     weight: float
+    shares: float | None
     underweight_score: int
     momentum_score: int
     value_score: int
@@ -318,7 +321,7 @@ def calculate_longterm_weights(
     return weights, total_value
 
 
-def fetch_market_data(symbol: str) -> tuple[float | None, float | None, str | None]:
+def fetch_market_data(symbol: str) -> tuple[float | None, float | None, float | None, str | None]:
     print(f"Henter markedsdata for {symbol}")
 
     try:
@@ -336,16 +339,16 @@ def fetch_market_data(symbol: str) -> tuple[float | None, float | None, str | No
         latest_price = round(float(closes.iloc[-1]), 2)
         currency = history.attrs.get("currency")
         one_month_index = max(len(closes) - 22, 0)
-        month_ago_price = float(closes.iloc[one_month_index])
+        month_ago_price = round(float(closes.iloc[one_month_index]), 2)
         if month_ago_price <= 0:
             one_month_change = None
         else:
             one_month_change = round(((latest_price / month_ago_price) - 1) * 100, 1)
 
-        return latest_price, one_month_change, currency
+        return latest_price, month_ago_price, one_month_change, currency
     except Exception as exc:
         print(f"Klarte ikke hente markedsdata for {symbol}: {exc}")
-        return None, None, None
+        return None, None, None, None
 
 
 def score_underweight(current_weight: float, target_weight: int) -> int:
@@ -426,17 +429,36 @@ def build_assessment(weight: float, target_weight: int, buy_score: int, trend_te
     return f"Nær målvekt, {trend_text.lower()} utvikling"
 
 
+def build_price_direction_emoji(price: float | None, month_ago_price: float | None) -> str:
+    if price is None or month_ago_price is None:
+        return "➡️"
+    tolerance = max(abs(month_ago_price) * 0.002, 0.01)
+    diff = price - month_ago_price
+    if abs(diff) <= tolerance:
+        return "➡️"
+    if diff > 0:
+        return "↗️"
+    return "↘️"
+
+
 def build_snapshots() -> list[StockSnapshot]:
     state = load_longterm_portfolio_state()
     prices: dict[str, float | None] = {}
+    month_ago_prices: dict[str, float | None] = {}
     changes: dict[str, float | None] = {}
     currencies: dict[str, str | None] = {}
+    shares_by_ticker: dict[str, float | None] = {}
 
     for key, position in POSITIONS.items():
-        price, one_month_change, currency = fetch_market_data(position.symbol)
+        price, month_ago_price, one_month_change, currency = fetch_market_data(position.symbol)
         prices[key] = price
+        month_ago_prices[key] = month_ago_price
         changes[key] = one_month_change
         currencies[key] = currency
+        if key in state:
+            shares_by_ticker[key] = max(float(state[key].get("shares", 0.0)), 0.0)
+        else:
+            shares_by_ticker[key] = None
 
     weights, _ = calculate_longterm_weights(state, prices)
     snapshots: list[StockSnapshot] = []
@@ -450,6 +472,27 @@ def build_snapshots() -> list[StockSnapshot]:
         buy_score = underweight_score + momentum_score + value_score
         trend_text = describe_trend(change)
         status_score = score_momentum(change)
+        month_ago_price = month_ago_prices[key]
+        direction = build_price_direction_emoji(prices[key], month_ago_price)
+
+        # Regelbasert longterm-vurdering: undervekt mot målvekt + trend/momentum + verdi/attraktivitet.
+        # Nyhetsanalyse brukes ikke i denne poengmodellen.
+        print(
+            f"[LONGTERM] {position.display_name} underweight_score={underweight_score} "
+            f"(weight={weight:.1f}% target={position.target_weight}%)"
+        )
+        print(
+            f"[LONGTERM] {position.display_name} trend_score={momentum_score} "
+            f"(one_month_change={change})"
+        )
+        print(
+            f"[LONGTERM] {position.display_name} value_score={value_score} "
+            f"(underweight={position.target_weight - weight:.1f} change={change})"
+        )
+        print(
+            f"[LONGTERM] {position.display_name} total_buy_score={buy_score} "
+            f"(underweight+trend+value)"
+        )
 
         snapshots.append(
             StockSnapshot(
@@ -459,11 +502,14 @@ def build_snapshots() -> list[StockSnapshot]:
                 emoji=position.emoji,
                 target_weight=position.target_weight,
                 price=prices[key],
+                month_ago_price=month_ago_price,
                 price_currency=currencies[key],
                 one_month_change=change,
+                price_direction=direction,
                 trend_text=trend_text,
                 status_score=status_score,
                 weight=weight,
+                shares=shares_by_ticker[key],
                 underweight_score=underweight_score,
                 momentum_score=momentum_score,
                 value_score=value_score,
@@ -495,13 +541,32 @@ def resolve_price_currency(snapshot: StockSnapshot) -> str:
 
 def format_price(snapshot: StockSnapshot) -> str:
     if snapshot.price is None:
-        return "Kurs: ikke tilgjengelig"
+        if snapshot.month_ago_price is None:
+            return "Kurs: ikke tilgjengelig (sist mnd: ikke tilgjengelig)"
+        month_text = format_money(snapshot.month_ago_price)
+        currency = resolve_price_currency(snapshot)
+        if currency:
+            return f"Kurs: ikke tilgjengelig (sist mnd: {month_text} {currency})"
+        return f"Kurs: ikke tilgjengelig (sist mnd: {month_text})"
 
-    value = f"{snapshot.price:.2f}".replace(".", ",")
+    value = format_money(snapshot.price)
     currency = resolve_price_currency(snapshot)
+    if snapshot.month_ago_price is None:
+        return f"Kurs: {value} {currency} {snapshot.price_direction} (sist mnd: ikke tilgjengelig)".strip()
+    month_value = format_money(snapshot.month_ago_price)
     if currency:
-        return f"Kurs: {value} {currency}"
-    return f"Kurs: {value}"
+        return f"Kurs: {value} {currency} {snapshot.price_direction} (sist mnd: {month_value} {currency})"
+    return f"Kurs: {value} {snapshot.price_direction} (sist mnd: {month_value})"
+
+
+def format_money(value: float) -> str:
+    return f"{value:.2f}".replace(".", ",")
+
+
+def format_shares(snapshot: StockSnapshot) -> str:
+    if snapshot.shares is None:
+        return "Antall: ikke tilgjengelig"
+    return f"Antall: {int(snapshot.shares)} aksjer"
 
 
 def allocate_capital(snapshots: list[StockSnapshot], total_capital: int = DEFAULT_NEW_CAPITAL) -> dict[str, int]:
@@ -564,11 +629,11 @@ def format_monthly_message(run_date: date, snapshots: list[StockSnapshot]) -> st
             [
                 f"{snapshot.emoji} {snapshot.display_name}",
                 format_price(snapshot),
-                f"Trend: {snapshot.trend_text}",
-                f"Endring (1m): {format_percentage(snapshot.one_month_change)}",
+                format_shares(snapshot),
                 f"Score: {snapshot.status_score}/5",
                 f"Vekt: {snapshot.weight:.1f}% (mål {snapshot.target_weight}%)",
-                f"Tiltak: {snapshot.action}",
+                f"Kjøpsscore: {snapshot.buy_score}/15",
+                f"Vurdering: {snapshot.assessment}",
                 "",
             ]
         )
@@ -605,6 +670,7 @@ def format_quarterly_message(run_date: date, snapshots: list[StockSnapshot]) -> 
             [
                 f"{snapshot.emoji} {snapshot.display_name}",
                 format_price(snapshot),
+                format_shares(snapshot),
                 f"Score: {snapshot.status_score}/5",
                 f"Vekt: {snapshot.weight:.1f}% (mål {snapshot.target_weight}%)",
                 f"Kjøpsscore: {snapshot.buy_score}/15",
