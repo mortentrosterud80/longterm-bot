@@ -2,6 +2,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
@@ -11,6 +12,7 @@ TOKEN_BOT = os.getenv("TOKEN_BOT") or os.getenv("TOKEN_BOT_LONG")
 CHAT_ID = os.getenv("CHAT_ID") or os.getenv("CHAT_ID_LONG")
 DEFAULT_NEW_CAPITAL = 30_000
 DIVIDER = "────────────────────"
+STATE_FILE_PATH = Path(__file__).with_name("longterm_portfolio_state.json")
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,18 @@ class DataFetchError(RuntimeError):
     pass
 
 
+def normalize_holding_key(key: str) -> str:
+    upper_key = key.upper()
+    aliases = {"NVO": "NOVO"}
+    return aliases.get(upper_key, upper_key)
+
+
+def holding_log_label(key: str) -> str:
+    if key == "NOVO":
+        return "NVO"
+    return key
+
+
 def validate_env() -> None:
     if not TOKEN_BOT:
         print("TOKEN_BOT/TOKEN_BOT_LONG mangler")
@@ -133,23 +147,175 @@ def resolve_run_date() -> date:
     return now_oslo.date()
 
 
-def load_holdings() -> dict[str, float]:
+def load_longterm_portfolio_state() -> dict[str, dict[str, float | str]]:
+    if STATE_FILE_PATH.exists():
+        try:
+            raw_state = json.loads(STATE_FILE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("longterm_portfolio_state.json må være gyldig JSON") from exc
+
+        state: dict[str, dict[str, float | str]] = {}
+        for raw_key, raw_value in raw_state.items():
+            key = normalize_holding_key(raw_key)
+            if key not in POSITIONS or not isinstance(raw_value, dict):
+                continue
+            shares = max(float(raw_value.get("shares", 0.0)), 0.0)
+            avg_price = float(raw_value.get("avg_price", 0.0))
+            currency = str(raw_value.get("currency", ""))
+            entry: dict[str, float | str] = {
+                "shares": shares,
+                "avg_price": avg_price,
+                "currency": currency,
+            }
+            if "market_value_nok" in raw_value:
+                entry["market_value_nok"] = float(raw_value["market_value_nok"])
+            state[key] = entry
+
+        loaded_log = ", ".join(
+            f"{holding_log_label(key)}={int(state.get(key, {}).get('shares', 0))}"
+            for key in POSITIONS
+        )
+        print(f"[LONGTERM] loaded state: {loaded_log}")
+        return state
+
     raw = os.getenv("LONG_PORTFOLIO_HOLDINGS")
-    if not raw:
-        print("LONG_PORTFOLIO_HOLDINGS mangler, bruker standard 1 aksje per posisjon")
-        return {key: 1.0 for key in POSITIONS}
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError("LONG_PORTFOLIO_HOLDINGS må være gyldig JSON") from exc
 
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("LONG_PORTFOLIO_HOLDINGS må være gyldig JSON") from exc
+        state: dict[str, dict[str, float | str]] = {}
+        for raw_key, raw_value in parsed.items():
+            key = normalize_holding_key(raw_key)
+            if key not in POSITIONS:
+                continue
 
-    holdings: dict[str, float] = {}
+            if isinstance(raw_value, dict):
+                shares = max(float(raw_value.get("shares", 0.0)), 0.0)
+                avg_price = float(raw_value.get("avg_price", 0.0))
+                currency = str(raw_value.get("currency", ""))
+                entry: dict[str, float | str] = {
+                    "shares": shares,
+                    "avg_price": avg_price,
+                    "currency": currency,
+                }
+                if "market_value_nok" in raw_value:
+                    entry["market_value_nok"] = float(raw_value["market_value_nok"])
+            else:
+                entry = {
+                    "shares": max(float(raw_value), 0.0),
+                    "avg_price": 0.0,
+                    "currency": "",
+                }
+            state[key] = entry
+
+        loaded_log = ", ".join(
+            f"{holding_log_label(key)}={int(state.get(key, {}).get('shares', 0))}"
+            for key in POSITIONS
+        )
+        print(f"[LONGTERM] loaded state from env: {loaded_log}")
+        return state
+
+    state = {}
     for key in POSITIONS:
-        amount = parsed.get(key, 0)
-        holdings[key] = max(float(amount), 0.0)
+        print(f"[LONGTERM] fallback shares=1 brukt for {holding_log_label(key)}")
+        state[key] = {"shares": 1.0, "avg_price": 0.0, "currency": ""}
+    return state
 
-    return holdings
+
+def save_longterm_portfolio_state(state: dict[str, dict[str, float | str]]) -> None:
+    normalized: dict[str, dict[str, float | str]] = {}
+    for raw_key, holding in state.items():
+        key = normalize_holding_key(raw_key)
+        if key not in POSITIONS:
+            continue
+
+        entry: dict[str, float | str] = {
+            "shares": max(float(holding.get("shares", 0.0)), 0.0),
+            "avg_price": float(holding.get("avg_price", 0.0)),
+            "currency": str(holding.get("currency", "")),
+        }
+        if "market_value_nok" in holding:
+            entry["market_value_nok"] = float(holding["market_value_nok"])
+        normalized[key] = entry
+
+    default_holding = {"shares": 1.0, "avg_price": 0.0, "currency": ""}
+    ordered = {key: normalized.get(key, default_holding) for key in POSITIONS}
+    STATE_FILE_PATH.write_text(
+        json.dumps(ordered, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def get_longterm_holding(ticker: str) -> dict[str, float | str]:
+    state = load_longterm_portfolio_state()
+    key = normalize_holding_key(ticker)
+    if key in state:
+        return state[key]
+    print(f"[LONGTERM] fallback shares=1 brukt for {holding_log_label(key)}")
+    return {"shares": 1.0, "avg_price": 0.0, "currency": ""}
+
+
+def update_longterm_holding(
+    ticker: str,
+    shares: float | None = None,
+    avg_price: float | None = None,
+    currency: str | None = None,
+    market_value_nok: float | None = None,
+) -> dict[str, dict[str, float | str]]:
+    state = load_longterm_portfolio_state()
+    key = normalize_holding_key(ticker)
+    current = state.get(key, {"shares": 1.0, "avg_price": 0.0, "currency": ""}).copy()
+
+    if shares is not None:
+        current["shares"] = max(float(shares), 0.0)
+    if avg_price is not None:
+        current["avg_price"] = float(avg_price)
+    if currency is not None:
+        current["currency"] = currency
+    if market_value_nok is not None:
+        current["market_value_nok"] = float(market_value_nok)
+
+    state[key] = current
+    save_longterm_portfolio_state(state)
+    return state
+
+
+def calculate_longterm_weights(
+    state: dict[str, dict[str, float | str]],
+    market_data: dict[str, float | None],
+) -> tuple[dict[str, float], float]:
+    market_values: dict[str, float] = {}
+    for key in POSITIONS:
+        holding = state.get(key)
+        shares = 1.0
+        if holding is None:
+            print(f"[LONGTERM] fallback shares=1 brukt for {holding_log_label(key)}")
+        else:
+            shares = max(float(holding.get("shares", 1.0)), 0.0)
+
+        price = market_data.get(key)
+        value = 0.0 if price is None else shares * price
+        market_values[key] = value
+
+    total_value = sum(market_values.values())
+    if total_value <= 0:
+        equal_weight = round(100 / len(POSITIONS), 1)
+        return {key: equal_weight for key in POSITIONS}, total_value
+
+    weights = {}
+    for key, value in market_values.items():
+        weight = round((value / total_value) * 100, 1)
+        weights[key] = weight
+        price = market_data.get(key)
+        holding = state.get(key, {})
+        shares = max(float(holding.get("shares", 1.0)), 0.0)
+        print(
+            f"[LONGTERM] weight calc: {holding_log_label(key)} shares={shares:.0f} price={price} value={value:.2f} weight={weight:.1f}"
+        )
+    print(f"[LONGTERM] weight calc total value={total_value:.2f}")
+    return weights, total_value
 
 
 def fetch_market_data(symbol: str) -> tuple[float | None, float | None, str | None]:
@@ -180,24 +346,6 @@ def fetch_market_data(symbol: str) -> tuple[float | None, float | None, str | No
     except Exception as exc:
         print(f"Klarte ikke hente markedsdata for {symbol}: {exc}")
         return None, None, None
-
-
-def calculate_weights(prices: dict[str, float | None], holdings: dict[str, float]) -> dict[str, float]:
-    market_values: dict[str, float] = {}
-    for key, position in POSITIONS.items():
-        price = prices.get(key)
-        shares = holdings.get(key, 0.0)
-        market_values[key] = 0.0 if price is None else price * shares
-
-    total_value = sum(market_values.values())
-    if total_value <= 0:
-        equal_weight = round(100 / len(POSITIONS), 1)
-        return {key: equal_weight for key in POSITIONS}
-
-    return {
-        key: round((value / total_value) * 100, 1)
-        for key, value in market_values.items()
-    }
 
 
 def score_underweight(current_weight: float, target_weight: int) -> int:
@@ -279,7 +427,7 @@ def build_assessment(weight: float, target_weight: int, buy_score: int, trend_te
 
 
 def build_snapshots() -> list[StockSnapshot]:
-    holdings = load_holdings()
+    state = load_longterm_portfolio_state()
     prices: dict[str, float | None] = {}
     changes: dict[str, float | None] = {}
     currencies: dict[str, str | None] = {}
@@ -290,7 +438,7 @@ def build_snapshots() -> list[StockSnapshot]:
         changes[key] = one_month_change
         currencies[key] = currency
 
-    weights = calculate_weights(prices, holdings)
+    weights, _ = calculate_longterm_weights(state, prices)
     snapshots: list[StockSnapshot] = []
 
     for key, position in POSITIONS.items():

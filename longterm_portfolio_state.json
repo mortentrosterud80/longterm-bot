@@ -1,0 +1,26 @@
+{
+  "KOG": {
+    "shares": 143,
+    "avg_price": 340.42,
+    "currency": "NOK",
+    "market_value_nok": 59896
+  },
+  "SOFI": {
+    "shares": 94,
+    "avg_price": 26.37,
+    "currency": "USD",
+    "market_value_nok": 14583
+  },
+  "TOMRA": {
+    "shares": 139,
+    "avg_price": 136.19,
+    "currency": "NOK",
+    "market_value_nok": 16180
+  },
+  "NVO": {
+    "shares": 66,
+    "avg_price": 339.71,
+    "currency": "DKK",
+    "market_value_nok": 23581
+  }
+}
