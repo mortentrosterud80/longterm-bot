@@ -44,6 +44,12 @@ Statefilen ligger i prosjektroten og støtter disse feltene per ticker:
 - `currency`
 - `market_value_nok` (valgfri referanseverdi)
 
+For utvikling "siden sist rapport" lagres et separat snapshot i:
+
+- `longterm_performance_snapshot.json`
+
+Snapshot brukes som grunnlag for endring per ticker og total portefølje mellom to rapportkjøringer. Hvis filen mangler ved første kjøring brukes robust fallback (`ikke tilgjengelig`) uten krasj.
+
 Eksempel:
 
 ```json
